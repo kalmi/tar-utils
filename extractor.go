@@ -128,7 +128,7 @@ func (te *Extractor) extractDir(h *tar.Header, depth int) error {
 		te.Path = path
 	}
 
-	return os.MkdirAll(path, 0755)
+	return os.MkdirAll(path, os.FileMode(h.Mode))
 }
 
 func (te *Extractor) extractSymlink(h *tar.Header) error {
@@ -162,7 +162,7 @@ func (te *Extractor) extractFile(h *tar.Header, r *tar.Reader, depth int, rootEx
 		} // else if old file exists, just overwrite it.
 	}
 
-	file, err := os.Create(path)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, os.FileMode(h.Mode))
 	if err != nil {
 		return err
 	}
