@@ -21,8 +21,6 @@ type Extractor struct {
 	// LinkFunc can be provided for user specified handling of filesystem links
 	// returning an error from this function aborts extraction
 	LinkFunc func(Link) error
-
-	prevDir *prevDir
 }
 
 // Link represents a filesystem link where Name is the link's destination path,
@@ -32,15 +30,14 @@ type Link struct {
 	Root, Name, Target string
 }
 
-// prevDir is used to keep track of metadata to set after writing a directory
-
-type prevDir struct {
+// prevDirMeta is used to keep track of metadata to set after writing a directory
+type prevDirMeta struct {
 	path    string
 	mode    *os.FileMode
-	prevDir *prevDir
+	prevDir *prevDirMeta
 }
 
-func (d *prevDir) applyMetadata() error {
+func (d *prevDirMeta) applyMetadata() error {
 	if d.mode == nil {
 		return nil
 	}
@@ -67,6 +64,8 @@ func (te *Extractor) Extract(reader io.Reader) error {
 		rootIsDir = true
 	}
 
+	dirChain := (*prevDirMeta)(nil)
+
 	// files come recursively in order (i == 0 is root directory)
 	for i := 0; ; i++ {
 		header, err := tarReader.Next()
@@ -79,9 +78,11 @@ func (te *Extractor) Extract(reader io.Reader) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := te.extractDir(header, i); err != nil {
+			newDirChain, err := te.extractDir(header, i, dirChain)
+			if err != nil {
 				return err
 			}
+			dirChain = newDirChain
 		case tar.TypeReg:
 			if err := te.extractFile(header, tarReader, i, rootExists, rootIsDir); err != nil {
 				return err
@@ -95,12 +96,12 @@ func (te *Extractor) Extract(reader io.Reader) error {
 		}
 	}
 
-	for te.prevDir != nil {
-		err := te.prevDir.applyMetadata()
+	for dirChain != nil {
+		err := dirChain.applyMetadata()
 		if err != nil {
 			return err
 		}
-		te.prevDir = te.prevDir.prevDir
+		dirChain = dirChain.prevDir
 	}
 
 	return nil
@@ -143,10 +144,10 @@ func (te *Extractor) outputPath(tarPath string) (outPath string, err error) {
 	return
 }
 
-func (te *Extractor) extractDir(h *tar.Header, depth int) error {
+func (te *Extractor) extractDir(h *tar.Header, depth int, prevDir *prevDirMeta) (*prevDirMeta, error) {
 	path, err := te.outputPath(h.Name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if depth == 0 {
@@ -155,29 +156,29 @@ func (te *Extractor) extractDir(h *tar.Header, depth int) error {
 	}
 
 	// The following depends upon the fact that the directories come recursively in order
-	for te.prevDir != nil && !strings.HasPrefix(path, te.prevDir.path) { // We exited prevDir
-		err := te.prevDir.applyMetadata()
+	for prevDir != nil && !strings.HasPrefix(path, prevDir.path) { // We exited prevDir
+		err := prevDir.applyMetadata()
 		if err != nil {
 			return nil, err
 		}
-		te.prevDir = te.prevDir.prevDir
+		prevDir = prevDir.prevDir
 	}
 	finalMode := os.FileMode(h.Mode).Perm()
 	intermediateMode := finalMode | 0002 // This is to ensure write access during extraction
 	if intermediateMode != finalMode {
 		// This will be used to fix-up the mode when exiting the directory
-		te.prevDir = &prevDir{path: path, mode: &finalMode, prevDir: te.prevDir}
+		prevDir = &prevDirMeta{path: path, mode: &finalMode, prevDir: prevDir}
 	} else {
-		te.prevDir = &prevDir{path: path, mode: nil, prevDir: te.prevDir}
+		prevDir = &prevDirMeta{path: path, mode: nil, prevDir: prevDir}
 	}
 
 	err = os.Chmod(path, intermediateMode)
 	if os.IsNotExist(err) {
 		// That's okay, mkdir will set it then
 	} else {
-		return err
+		return nil, err
 	}
-	return os.MkdirAll(path, intermediateMode)
+	return nil, os.MkdirAll(path, intermediateMode)
 }
 
 func (te *Extractor) extractSymlink(h *tar.Header) error {
