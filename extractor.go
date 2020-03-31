@@ -21,6 +21,8 @@ type Extractor struct {
 	// LinkFunc can be provided for user specified handling of filesystem links
 	// returning an error from this function aborts extraction
 	LinkFunc func(Link) error
+
+	prevDir *prevDir
 }
 
 // Link represents a filesystem link where Name is the link's destination path,
@@ -28,6 +30,21 @@ type Extractor struct {
 // and Root is the extraction root
 type Link struct {
 	Root, Name, Target string
+}
+
+// prevDir is used to keep track of metadata to set after writing a directory
+
+type prevDir struct {
+	path    string
+	mode    *os.FileMode
+	prevDir *prevDir
+}
+
+func (d *prevDir) applyMetadata() error {
+	if d.mode == nil {
+		return nil
+	}
+	return os.Chmod(d.path, *d.mode)
 }
 
 func (te *Extractor) Extract(reader io.Reader) error {
@@ -77,6 +94,12 @@ func (te *Extractor) Extract(reader io.Reader) error {
 			return fmt.Errorf("unrecognized tar header type: %d", header.Typeflag)
 		}
 	}
+
+	for te.prevDir != nil {
+		te.prevDir.applyMetadata()
+		te.prevDir = te.prevDir.prevDir
+	}
+
 	return nil
 }
 
@@ -128,7 +151,21 @@ func (te *Extractor) extractDir(h *tar.Header, depth int) error {
 		te.Path = path
 	}
 
-	return os.MkdirAll(path, os.FileMode(h.Mode))
+	// The following depends upon the fact that the directories come recursively in order
+	for te.prevDir != nil && !strings.HasPrefix(path, te.prevDir.path) { // We exited prevDir
+		te.prevDir.applyMetadata()
+		te.prevDir = te.prevDir.prevDir
+	}
+	finalMode := os.FileMode(h.Mode).Perm()
+	intermediateMode := finalMode | 0002 // This is to ensure write access during extraction
+	if intermediateMode != finalMode {
+		// This will be used to fix-up the mode when exiting the directory
+		te.prevDir = &prevDir{path: path, mode: &finalMode, prevDir: te.prevDir}
+	} else {
+		te.prevDir = &prevDir{path: path, mode: nil, prevDir: te.prevDir}
+	}
+
+	return os.MkdirAll(path, intermediateMode)
 }
 
 func (te *Extractor) extractSymlink(h *tar.Header) error {
