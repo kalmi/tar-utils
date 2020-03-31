@@ -96,7 +96,10 @@ func (te *Extractor) Extract(reader io.Reader) error {
 	}
 
 	for te.prevDir != nil {
-		te.prevDir.applyMetadata()
+		err := te.prevDir.applyMetadata()
+		if err != nil {
+			return err
+		}
 		te.prevDir = te.prevDir.prevDir
 	}
 
@@ -153,7 +156,10 @@ func (te *Extractor) extractDir(h *tar.Header, depth int) error {
 
 	// The following depends upon the fact that the directories come recursively in order
 	for te.prevDir != nil && !strings.HasPrefix(path, te.prevDir.path) { // We exited prevDir
-		te.prevDir.applyMetadata()
+		err := te.prevDir.applyMetadata()
+		if err != nil {
+			return nil, err
+		}
 		te.prevDir = te.prevDir.prevDir
 	}
 	finalMode := os.FileMode(h.Mode).Perm()
@@ -165,6 +171,12 @@ func (te *Extractor) extractDir(h *tar.Header, depth int) error {
 		te.prevDir = &prevDir{path: path, mode: nil, prevDir: te.prevDir}
 	}
 
+	err = os.Chmod(path, intermediateMode)
+	if os.IsNotExist(err) {
+		// That's okay, mkdir will set it then
+	} else {
+		return err
+	}
 	return os.MkdirAll(path, intermediateMode)
 }
 
