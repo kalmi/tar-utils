@@ -162,13 +162,39 @@ func (te *Extractor) extractFile(h *tar.Header, r *tar.Reader, depth int, rootEx
 		} // else if old file exists, just overwrite it.
 	}
 
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, os.FileMode(h.Mode))
+	mode := os.FileMode(h.Mode).Perm()
+	file, err := createFile(path, mode)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
 	return copyWithProgress(file, r, te.Progress)
+}
+
+// createFile (re)creates a file at path.
+// It ensures that the mode is set to the requested value.
+func createFile(path string, mode os.FileMode) (*os.File, error) {
+	// Create the file if it doesn't exist. This is the happy path.
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		if os.IsPermission(err) { // No write access to the directory
+			return nil, err
+		}
+		if os.IsExist(err) { // File already exists, care must taken to actually change the mode
+			err = os.Chmod(path, mode)
+			if err != nil {
+				return nil, err
+			}
+			file, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	return file, nil
 }
 
 func copyWithProgress(to io.Writer, from io.Reader, cb func(int64) int64) error {
